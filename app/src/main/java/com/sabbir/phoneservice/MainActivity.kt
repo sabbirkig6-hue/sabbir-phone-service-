@@ -5,13 +5,13 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
-import android.content.Context
+import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
-import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 
@@ -20,6 +20,10 @@ class MainActivity : AppCompatActivity() {
     private var bluetoothAdapter: BluetoothAdapter? = null
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
+    private lateinit var wifiStatus: TextView
+    private lateinit var wifiResults: TextView
+    private lateinit var wifiManager: WifiManager
+
     private val devices = linkedMapOf<String, String>()
 
     private val scanCallback = object : ScanCallback() {
@@ -42,10 +46,20 @@ class MainActivity : AppCompatActivity() {
 
         override fun onScanFailed(errorCode: Int) {
             runOnUiThread {
-                status.text = "স্ক্যান ব্যর্থ: $errorCode"
+                if (::status.isInitialized) {
+                    status.text = "স্ক্যান ব্যর্থ: $errorCode"
+                }
             }
         }
     }
+
+    private val wifiReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            showWifiResults()
+        }
+    }
+
+    private var receiverRegistered = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,6 +67,18 @@ class MainActivity : AppCompatActivity() {
         val manager =
             getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = manager.adapter
+
+        wifiManager =
+            applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+
+        val filter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(wifiReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(wifiReceiver, filter)
+        }
+        receiverRegistered = true
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -89,7 +115,6 @@ class MainActivity : AppCompatActivity() {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
         setContentView(root)
-
         showDashboard()
     }
 
@@ -132,12 +157,12 @@ class MainActivity : AppCompatActivity() {
         content.removeAllViews()
 
         addCard("📶 Bluetooth Scanner",
-            "BLE ডিভাইস খুঁজুন এবং সিগন্যাল দেখুন") {
+            "BLE ডিভাইসের নাম ও সিগন্যাল দেখুন") {
             showBluetooth()
         }
 
         addCard("📡 Wi-Fi Scanner",
-            "নিজের আশপাশের Wi-Fi নেটওয়ার্ক দেখুন") {
+            "আশপাশের Wi-Fi নেটওয়ার্ক খুঁজুন") {
             showWifi()
         }
 
@@ -155,8 +180,7 @@ class MainActivity : AppCompatActivity() {
     private fun showBluetooth() {
         content.removeAllViews()
 
-        addCard("Bluetooth Scanner",
-            "BLE ডিভাইস স্ক্যান শুরু করুন") {
+        addCard("Bluetooth Scanner", "BLE ডিভাইস স্ক্যান করুন") {
             checkBluetoothPermission()
         }
 
@@ -166,10 +190,9 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.GREEN)
             setPadding(8, 20, 8, 20)
         }
-
         content.addView(status)
 
-        addCard("STOP SCAN", "স্ক্যান বন্ধ করুন") {
+        addCard("STOP SCAN", "Bluetooth স্ক্যান বন্ধ করুন") {
             try {
                 bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
                 status.text = "স্ক্যান বন্ধ হয়েছে"
@@ -178,9 +201,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        addCard("BACK", "মূল মেনুতে ফিরে যান") {
-            showDashboard()
-        }
+        addBackButton()
     }
 
     private fun checkBluetoothPermission() {
@@ -204,22 +225,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
-        if (requestCode == 100 &&
-            grantResults.isNotEmpty() &&
-            grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            startBluetoothScan()
-        } else if (::status.isInitialized) {
-            status.text = "প্রয়োজনীয় অনুমতি পাওয়া যায়নি"
-        }
-    }
-
     private fun startBluetoothScan() {
         try {
             if (bluetoothAdapter?.isEnabled != true) {
@@ -237,6 +242,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == 100 &&
+            grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            startBluetoothScan()
+        }
+
+        if (requestCode == 101 &&
+            grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            startWifiScan()
+        }
+    }
+
     private fun showBluetoothResults() {
         if (!::status.isInitialized) return
 
@@ -249,10 +274,104 @@ class MainActivity : AppCompatActivity() {
 
     private fun showWifi() {
         content.removeAllViews()
-        addCard("Wi-Fi Scanner",
-            "পরের ধাপে Wi-Fi নেটওয়ার্ক স্ক্যান যুক্ত হবে।") {}
-        addCard("BACK", "মূল মেনুতে ফিরুন") {
-            showDashboard()
+
+        addCard("📡 Wi-Fi Scanner",
+            "Wi-Fi চালু রেখে স্ক্যান করুন") {
+            checkWifiPermission()
+        }
+
+        wifiStatus = TextView(this).apply {
+            text = "স্ক্যানের জন্য প্রস্তুত"
+            textSize = 15f
+            setTextColor(Color.GREEN)
+            setPadding(8, 18, 8, 18)
+        }
+        content.addView(wifiStatus)
+
+        wifiResults = TextView(this).apply {
+            text = "এখনো কোনো নেটওয়ার্ক পাওয়া যায়নি"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setPadding(12, 15, 12, 15)
+        }
+        content.addView(wifiResults)
+
+        addCard("🔄 SCAN AGAIN", "আবার Wi-Fi স্ক্যান করুন") {
+            checkWifiPermission()
+        }
+
+        addBackButton()
+    }
+
+    private fun checkWifiPermission() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+
+            requestPermissions(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                101
+            )
+        } else {
+            startWifiScan()
+        }
+    }
+
+    private fun startWifiScan() {
+        try {
+            if (!wifiManager.isWifiEnabled) {
+                wifiStatus.text = "আগে ফোনের Wi-Fi চালু করুন"
+                return
+            }
+
+            wifiStatus.text = "Wi-Fi নেটওয়ার্ক খোঁজা হচ্ছে..."
+
+            val started = wifiManager.startScan()
+
+            if (!started) {
+                wifiStatus.text =
+                    "স্ক্যান সীমাবদ্ধ হতে পারে। আগের ফলাফল দেখানো হচ্ছে।"
+                showWifiResults()
+            }
+        } catch (_: SecurityException) {
+            wifiStatus.text = "Location অনুমতি প্রয়োজন"
+        } catch (_: Exception) {
+            wifiStatus.text = "Wi-Fi স্ক্যান করা যায়নি"
+        }
+    }
+
+    private fun showWifiResults() {
+        try {
+            val results = wifiManager.scanResults
+
+            if (results.isEmpty()) {
+                wifiStatus.text =
+                    "নেটওয়ার্ক পাওয়া যায়নি। Location চালু করে আবার চেষ্টা করুন।"
+                wifiResults.text = "কোনো Wi-Fi ফলাফল নেই"
+                return
+            }
+
+            wifiStatus.text = "মোট ${results.size}টি নেটওয়ার্ক পাওয়া গেছে"
+
+            wifiResults.text = results
+                .sortedByDescending { it.level }
+                .joinToString("\n\n") { network ->
+
+                    val name = network.SSID
+                        .takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+                        ?: "নাম প্রকাশিত নয়"
+
+                    """
+                    📶 $name
+                    Signal: ${network.level} dBm
+                    Frequency: ${network.frequency} MHz
+                    Security: ${network.capabilities}
+                    """.trimIndent()
+                }
+
+        } catch (_: SecurityException) {
+            wifiStatus.text = "Wi-Fi অনুমতি পাওয়া যায়নি"
+        } catch (_: Exception) {
+            wifiStatus.text = "ফলাফল পড়া যায়নি"
         }
     }
 
@@ -260,17 +379,32 @@ class MainActivity : AppCompatActivity() {
         content.removeAllViews()
         addCard("Mobile Signal",
             "পরের ধাপে মোবাইল নেটওয়ার্ক তথ্য যুক্ত হবে।") {}
-        addCard("BACK", "মূল মেনুতে ফিরুন") {
-            showDashboard()
-        }
+        addBackButton()
     }
 
     private fun showService() {
         content.removeAllViews()
         addCard("Phone Service",
             "ফোনের সাধারণ সমস্যা সমাধানের গাইড পরের ধাপে যুক্ত হবে।") {}
-        addCard("BACK", "মূল মেনুতে ফিরুন") {
+        addBackButton()
+    }
+
+    private fun addBackButton() {
+        addCard("⬅ BACK", "মূল মেনুতে ফিরে যান") {
             showDashboard()
         }
+    }
+
+    override fun onDestroy() {
+        try {
+            bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: Exception) {}
+
+        if (receiverRegistered) {
+            unregisterReceiver(wifiReceiver)
+            receiverRegistered = false
+        }
+
+        super.onDestroy()
     }
 }
